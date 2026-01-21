@@ -9,7 +9,7 @@
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>com.tata</groupId>
-	<artifactId>Retail-product-order</artifactId>
+	<artifactId>Product-order-api</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>Retail-product-order</name>
 	<description>Demo project for Spring Boot</description>
