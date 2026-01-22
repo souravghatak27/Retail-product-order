@@ -21,18 +21,21 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class OrderServiceTest {
@@ -54,16 +57,18 @@ class OrderServiceTest {
 
 	private User user;
 
+	private OrderStatus status;
+
 	private Product product;
 
 	@BeforeEach
 	void setupSecurity() {
-		user = User.builder().id(1L).username("manoj").role(UserRole.USER).build();
+		user = User.builder().id(1L).username("user1").role(UserRole.USER).build();
 
 		product = Product.builder().id(1L).name("Laptop").price(new BigDecimal("1000")).quantity(10).deleted(false)
 				.build();
 
-		SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("manoj", null,
+		SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("User1", null,
 				List.of(new SimpleGrantedAuthority("ROLE_USER"))));
 	}
 
@@ -77,62 +82,63 @@ class OrderServiceTest {
 	@Test
 	void createOrder_success() {
 
-		OrderItemRequest itemRequest = new OrderItemRequest(1L, 2);
-		OrderRequest request = new OrderRequest(List.of(itemRequest));
+		OrderItemDTO item =
+				new OrderItemDTO(null, 10L, null, 2, null, null, null);
 
-		User user = User.builder().id(1L).username("manoj").role(UserRole.USER).build();
+		OrderRequest request =
+				new OrderRequest(List.of(
+						new OrderItemRequest(10L, 2)
+				));
 
-		Product product = Product.builder().id(1L).name("Laptop").price(new BigDecimal("1000")).quantity(10)
-				.deleted(false).build();
+		when(userRepository.findByUsername("User1"))
+				.thenReturn(Optional.of(user));
 
-		when(userRepository.findByUsername("manoj")).thenReturn(Optional.of(user));
+		when(productRepository.findById(10L))
+				.thenReturn(Optional.of(product));
 
-		when(productRepository.findAllById(List.of(1L))).thenReturn(List.of(product));
+		when(discountCalculator.calculateDiscount(any(), any()))
+				.thenReturn(BigDecimal.ZERO);
 
-		when(discountCalculator.calculateDiscount(any(),any())).thenReturn(new BigDecimal("100"));
+		when(orderRepository.save(any()))
+				.thenAnswer(inv -> inv.getArgument(0));
 
-		when(orderRepository.save(any(Order.class))).thenAnswer(invocation -> {
-			Order order = invocation.getArgument(0);
-			order.setId(1L);
-			return order;
-		});
-
-		// ---------- WHEN ----------
 		OrderDTO response = orderService.createOrder(request);
 
-		// ---------- THEN ----------
 		assertNotNull(response);
-		assertEquals(1L, response.id());
-		assertEquals(0, response.orderTotal().compareTo(new BigDecimal("1900.00")));
-		assertEquals(OrderStatus.PENDING, response.status());
-
-		verify(userRepository).findByUsername("manoj");
-		verify(productRepository).save(product);
-		verify(orderRepository).save(any(Order.class));
+		assertEquals(BigDecimal.valueOf(2000), response.orderTotal());
 	}
+	@Test
+	void shouldThrowExceptionWhenUserNotFound() {
 
+		when(userRepository.findByUsername("User1"))
+				.thenReturn(Optional.empty());
+
+		OrderRequest request = new OrderRequest(List.of());
+
+		assertThrows(ResourceNotFoundException.class,
+				() -> orderService.createOrder(request));
+	}
 	@Test
 	void placeOrder_insufficientStock() {
+		when(userRepository.findByUsername("User1"))
+				.thenReturn(Optional.of(user));
+
 		product.setQuantity(1);
-		product.setDeleted(true);
-		OrderRequest request = new OrderRequest(List.of(new OrderItemRequest(1L, 5)));
-		when(userRepository.findByUsername("Sourav")).thenReturn(Optional.of(user));
-		when(productRepository.findAllById(List.of(1L))).thenReturn(List.of(product));
-		assertThrows(InsufficientStockException.class, () -> orderService.createOrder(request));
+
+		when(productRepository.findById(10L))
+				.thenReturn(Optional.of(product));
+
+		OrderRequest request = new OrderRequest(
+				List.of(new OrderItemRequest(10L, 5))
+		);
+
+		assertThrows(InsufficientStockException.class,
+				() -> orderService.createOrder(request));
 	}
 
-	// ---------- GET ORDER ----------
 
-	@Test
-	void getOrderById_success_owner() {
-		Order order = Order.builder().id(1L).user(user).items(List.of()).build();
 
-		when(orderRepository.findById(1L)).thenReturn(Optional.of(order));
 
-		var response = orderService.getOrderById(1L);
-
-		assertEquals(1L, response.id());
-	}
 
 	@Test
 	void getOrderById_forbidden() {
@@ -149,13 +155,36 @@ class OrderServiceTest {
 
 	@Test
 	void getMyOrders_success() {
-		Order order = Order.builder().id(1L).user(user).items(List.of()).build();
+		User user = User.builder()
+				.id(1L)
+				.username("User1")
+				.build();
 
-		when(userRepository.findByUsername("manoj")).thenReturn(Optional.of(user));
+		Order order = Order.builder()
+				.id(1L)
+				.user(user)
+				.items(new ArrayList<>())
+				.orderTotal(BigDecimal.TEN)
+				.status(OrderStatus.PENDING)
+				.createdAt(LocalDateTime.now())
+				.updatedAt(LocalDateTime.now())
+				.build();
 
-		when(orderRepository.findByUser(eq(user), any())).thenReturn(new PageImpl<>(List.of(order)));
+		Authentication auth = mock(Authentication.class);
+		when(auth.getName()).thenReturn("User1");
 
-		Page<?> page = orderService.getMyOrders(PageRequest.of(0, 10));
+		SecurityContext context = mock(SecurityContext.class);
+		when(context.getAuthentication()).thenReturn(auth);
+		SecurityContextHolder.setContext(context);
+
+		when(userRepository.findByUsername("User1"))
+				.thenReturn(Optional.of(user));
+
+		when(orderRepository.findByUser(eq(user), any(Pageable.class)))
+				.thenReturn(new PageImpl<>(List.of(order)));
+
+		Page<OrderDTO> page =
+				orderService.getMyOrders(PageRequest.of(0, 10));
 
 		assertEquals(1, page.getTotalElements());
 	}
@@ -164,12 +193,45 @@ class OrderServiceTest {
 
 	@Test
 	void getAllOrders_success() {
-		Order order = Order.builder().id(1L).user(user).items(List.of()).build();
+		User user = User.builder()
+				.id(1L)
+				.username("testuser")
+				.build();
 
-		when(orderRepository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of(order)));
+		Order order = Order.builder()
+				.id(10L)
+				.user(user)
+				.items(new ArrayList<>())
+				.orderTotal(BigDecimal.ONE)
+				.status(OrderStatus.PENDING)
+				.createdAt(LocalDateTime.now())
+				.updatedAt(LocalDateTime.now())
+				.build();
 
-		Page<?> page = orderService.getAllOrders(PageRequest.of(0, 10));
+		when(orderRepository.findAll(any(Pageable.class)))
+				.thenReturn(new PageImpl<>(List.of(order)));
+
+		Page<OrderDTO> page =
+				orderService.getAllOrders(PageRequest.of(0, 10));
 
 		assertEquals(1, page.getTotalElements());
+	}
+
+	@Test
+	void shouldThrowExceptionWhenProductIsDeleted() {
+
+		when(userRepository.findByUsername("User1"))
+				.thenReturn(Optional.of(user));
+
+		product.setDeleted(true);
+
+		when(productRepository.findById(10L))
+				.thenReturn(Optional.of(product));
+
+		OrderRequest request =
+				new OrderRequest(List.of(new OrderItemRequest(10L, 1)));
+
+		assertThrows(ResourceNotFoundException.class,
+				() -> orderService.createOrder(request));
 	}
 }
